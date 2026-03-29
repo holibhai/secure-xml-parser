@@ -18,6 +18,8 @@ import javax.xml.validation.Validator;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.StringReader;
+import java.util.ArrayDeque;
+import java.util.Deque;
 
 public class XmlParser {
 
@@ -139,8 +141,8 @@ public class XmlParser {
     }
 
     private void assertSafeStructure(String xmlContent) {
-        int currentDepth = 0;
         int deepestDepth = 0;
+        Deque<String> elementStack = new ArrayDeque<>();
 
         for (int index = 0; index < xmlContent.length(); index++) {
             if (xmlContent.charAt(index) != '<') {
@@ -159,28 +161,47 @@ public class XmlParser {
                 index = skipUntil(xmlContent, index + 2, "?>");
                 continue;
             }
-            if (startsWith(xmlContent, index, "</")) {
-                currentDepth = Math.max(0, currentDepth - 1);
-                continue;
-            }
             if (startsWith(xmlContent, index, "<!DOCTYPE") || startsWith(xmlContent, index, "<!ENTITY")) {
                 throw new XmlParsingException("DOCTYPE and ENTITY declarations are not allowed");
             }
 
-            int tagEnd = xmlContent.indexOf('>', index);
-            if (tagEnd == -1) {
-                throw new XmlParsingException("Malformed XML: missing closing bracket for a tag");
+            int tagEnd = findTagEnd(xmlContent, index);
+            if (startsWith(xmlContent, index, "</")) {
+                String closingTagName = extractTagName(xmlContent, index, tagEnd);
+                if (elementStack.isEmpty()) {
+                    throw new XmlParsingException("Malformed XML: closing tag without a matching opening tag");
+                }
+
+                String openingTagName = elementStack.removeLast();
+                if (!openingTagName.equals(closingTagName)) {
+                    throw new XmlParsingException(
+                            "Malformed XML: expected closing tag for <" + openingTagName + "> but found </"
+                                    + closingTagName + ">");
+                }
+                index = tagEnd;
+                continue;
             }
 
-            boolean selfClosing = tagEnd > index && xmlContent.charAt(tagEnd - 1) == '/';
-            if (!selfClosing && isOpeningTag(xmlContent, index)) {
-                currentDepth++;
-                deepestDepth = Math.max(deepestDepth, currentDepth);
+            if (!isOpeningTag(xmlContent, index)) {
+                index = tagEnd;
+                continue;
+            }
+
+            if (!isSelfClosingTag(xmlContent, index, tagEnd)) {
+                elementStack.addLast(extractTagName(xmlContent, index, tagEnd));
+                deepestDepth = Math.max(deepestDepth, elementStack.size());
                 if (deepestDepth > maxElementDepth) {
                     throw new XmlParsingException(
                             "XML nesting depth exceeds the configured limit of " + maxElementDepth);
                 }
             }
+
+            index = tagEnd;
+        }
+
+        if (!elementStack.isEmpty()) {
+            throw new XmlParsingException(
+                    "Malformed XML: missing closing tag for <" + elementStack.peekLast() + ">");
         }
     }
 
@@ -191,7 +212,68 @@ public class XmlParser {
         }
 
         char firstCharacter = xmlContent.charAt(nameStart);
-        return Character.isLetter(firstCharacter) || firstCharacter == '_';
+        return Character.isLetter(firstCharacter) || firstCharacter == '_' || firstCharacter == ':';
+    }
+
+    private int findTagEnd(String xmlContent, int tagStartIndex) {
+        boolean insideQuotes = false;
+        char quoteCharacter = 0;
+
+        for (int index = tagStartIndex + 1; index < xmlContent.length(); index++) {
+            char currentCharacter = xmlContent.charAt(index);
+            if (insideQuotes) {
+                if (currentCharacter == quoteCharacter) {
+                    insideQuotes = false;
+                }
+                continue;
+            }
+
+            if (currentCharacter == '"' || currentCharacter == '\'') {
+                insideQuotes = true;
+                quoteCharacter = currentCharacter;
+                continue;
+            }
+
+            if (currentCharacter == '>') {
+                return index;
+            }
+        }
+
+        throw new XmlParsingException("Malformed XML: missing closing bracket for a tag");
+    }
+
+    private boolean isSelfClosingTag(String xmlContent, int tagStartIndex, int tagEndIndex) {
+        for (int index = tagEndIndex - 1; index > tagStartIndex; index--) {
+            char currentCharacter = xmlContent.charAt(index);
+            if (Character.isWhitespace(currentCharacter)) {
+                continue;
+            }
+            return currentCharacter == '/';
+        }
+
+        return false;
+    }
+
+    private String extractTagName(String xmlContent, int tagStartIndex, int tagEndIndex) {
+        int nameStart = tagStartIndex + 1;
+        if (xmlContent.charAt(nameStart) == '/') {
+            nameStart++;
+        }
+
+        int nameEnd = nameStart;
+        while (nameEnd < tagEndIndex) {
+            char currentCharacter = xmlContent.charAt(nameEnd);
+            if (Character.isWhitespace(currentCharacter) || currentCharacter == '/' || currentCharacter == '>') {
+                break;
+            }
+            nameEnd++;
+        }
+
+        if (nameStart == nameEnd) {
+            throw new XmlParsingException("Malformed XML: missing element name");
+        }
+
+        return xmlContent.substring(nameStart, nameEnd);
     }
 
     private int skipUntil(String xmlContent, int startIndex, String terminator) {
