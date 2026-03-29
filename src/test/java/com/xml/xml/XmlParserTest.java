@@ -42,6 +42,16 @@ class XmlParserTest {
                 () -> parser.parse("<root><child></root>")
         );
 
-        assertEquals("Malformed XML: missing closing tag", exception.getMessage());
+        assertEquals("Malformed XML: expected closing tag for <child> but found </root>", exception.getMessage());
+    }
+
+    @Test
+    void rejectsUnclosedRootElementBeforeDomParsing() {
+        XmlParser.XmlParsingException exception = assertThrows(
+                XmlParser.XmlParsingException.class,
+                () -> parser.parse("<root><child/></root")
+        );
+
+        assertEquals("Malformed XML: missing closing bracket for a tag", exception.getMessage());
     }
 }
